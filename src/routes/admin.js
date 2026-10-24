@@ -2,7 +2,6 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
-import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../db.js';
 import { ok, fail, ah } from '../lib/http.js';
@@ -10,6 +9,7 @@ import { validateAdminEmail } from '../lib/email.js';
 import { pickI18n, num, toDateOnly, jsonSafe } from '../lib/i18n.js';
 import { serviceToTour, placeToCard, bookingToSummary } from '../lib/mappers.js';
 import { requireAdmin, requireRole, logActivity, clientIp } from '../lib/auth.js';
+import { deleteFromCloudinary, isCloudinaryConfigured, uploadToCloudinary } from '../lib/cloudinary.js';
 
 export const adminRouter = Router();
 adminRouter.use(requireAdmin);
@@ -245,18 +245,9 @@ adminRouter.delete('/places/:id', requireRole(...EDITOR), ah(async (req, res) =>
 }));
 
 // ---------- Media ----------
-// Files are stored locally under backend/uploads for this step; move to object
-// storage (S3/Supabase Storage) before production per BACKEND_API_CONTRACT.md.
 const uploadDir = path.join(process.cwd(), 'uploads');
-fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, uploadDir),
-    filename: (_req, file, cb) => {
-      const safe = path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 80);
-      cb(null, `${crypto.randomBytes(8).toString('hex')}-${safe}`);
-    },
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (/^(image|video)\//.test(file.mimetype)) cb(null, true);
@@ -280,19 +271,42 @@ adminRouter.get('/media', requireRole(...EDITOR), ah(async (req, res) => {
 
 adminRouter.post('/media', requireRole(...EDITOR), upload.single('file'), ah(async (req, res) => {
   if (!req.file) return fail(res, 400, 'Multipart field "file" is required.', 'VALIDATION_ERROR');
-  const row = await prisma.media.create({
-    data: {
-      storage_provider: 'local',
-      storage_key: req.file.filename,
-      public_url: `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`,
-      kind: req.file.mimetype.startsWith('video/') ? 'VIDEO' : 'IMAGE',
-      mime_type: req.file.mimetype,
-      size_bytes: BigInt(req.file.size),
-      alt_i18n: i18nInput(req.body?.alt, ''),
-      caption_i18n: i18nInput(req.body?.caption, ''),
-      uploaded_by: req.admin.id,
-    },
-  });
+  if (!isCloudinaryConfigured()) {
+    return fail(res, 503, 'Media storage is not configured. Contact the site administrator.', 'MEDIA_STORAGE_UNAVAILABLE');
+  }
+
+  let asset;
+  try {
+    asset = await uploadToCloudinary(req.file);
+  } catch (error) {
+    console.error('Cloudinary media upload failed:', error);
+    return fail(res, 502, 'Could not store uploaded media. Please try again.', 'MEDIA_UPLOAD_FAILED');
+  }
+
+  let row;
+  try {
+    row = await prisma.media.create({
+      data: {
+        storage_provider: 'cloudinary',
+        storage_key: asset.storageKey,
+        public_url: asset.publicUrl,
+        kind: req.file.mimetype.startsWith('video/') ? 'VIDEO' : 'IMAGE',
+        mime_type: req.file.mimetype,
+        size_bytes: BigInt(asset.sizeBytes),
+        alt_i18n: i18nInput(req.body?.alt, ''),
+        caption_i18n: i18nInput(req.body?.caption, ''),
+        uploaded_by: req.admin.id,
+      },
+    });
+  } catch (error) {
+    try {
+      await deleteFromCloudinary(asset.storageKey, req.file.mimetype.startsWith('video/') ? 'VIDEO' : 'IMAGE');
+    } catch (cleanupError) {
+      console.error('Could not clean up Cloudinary asset after database failure:', cleanupError);
+    }
+    throw error;
+  }
+
   logActivity({ adminId: req.admin.id, action: 'media.upload', entityType: 'media', entityId: row.id, summary: req.file.originalname, ip: clientIp(req) });
   ok(res, jsonSafe(mediaPublicUrl(req, row)), 201);
 }));
@@ -373,14 +387,25 @@ adminRouter.delete('/media/:id', requireRole(...EDITOR), ah(async (req, res) => 
     return fail(res, 409, 'Media is still linked to content. Unlink it first.', 'CONFLICT');
   }
   try {
+    const existing = await prisma.media.findUnique({ where: { id: req.params.id } });
+    if (!existing) return fail(res, 404, 'Media not found.', 'NOT_FOUND');
+    if (existing.storage_provider === 'cloudinary') {
+      await deleteFromCloudinary(existing.storage_key, existing.kind);
+    } else if (existing.storage_provider !== 'local') {
+      return fail(res, 500, 'Media uses an unsupported storage provider.', 'MEDIA_STORAGE_UNSUPPORTED');
+    }
+
     const row = await prisma.media.delete({ where: { id: req.params.id } });
     if (row.storage_provider === 'local') {
       fs.unlink(path.join(uploadDir, row.storage_key), () => {});
     }
     logActivity({ adminId: req.admin.id, action: 'media.delete', entityType: 'media', entityId: req.params.id, ip: clientIp(req) });
     ok(res, { deleted: true });
-  } catch {
-    return fail(res, 404, 'Media not found.', 'NOT_FOUND');
+  } catch (error) {
+    if (error?.code === 'P2025') {
+      return fail(res, 404, 'Media not found.', 'NOT_FOUND');
+    }
+    throw error;
   }
 }));
 
