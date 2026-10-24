@@ -1,0 +1,545 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model activity_logs {
+  id          BigInt   @id @default(autoincrement())
+  admin_id    String?  @db.Uuid
+  action      String
+  entity_type String?
+  entity_id   String?
+  summary     String?
+  metadata    Json     @default("{}")
+  ip_address  String?  @db.Inet
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  admins      admins?  @relation(fields: [admin_id], references: [id], onUpdate: NoAction)
+
+  @@index([admin_id, created_at(sort: Desc)], map: "activity_logs_admin_idx")
+  @@index([created_at(sort: Desc)], map: "activity_logs_created_idx")
+  @@index([entity_type, entity_id, created_at(sort: Desc)], map: "activity_logs_entity_idx")
+}
+
+model admin_sessions {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  admin_id     String    @db.Uuid
+  token_hash   String    @unique
+  expires_at   DateTime  @db.Timestamptz(6)
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  last_seen_at DateTime? @db.Timestamptz(6)
+  ip_address   String?   @db.Inet
+  user_agent   String?
+  admins       admins    @relation(fields: [admin_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([admin_id], map: "admin_sessions_admin_idx")
+  @@index([expires_at], map: "admin_sessions_expiry_idx")
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model admins {
+  id                     String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email                  String
+  password_hash          String
+  display_name           String
+  role                   admin_role               @default(ADMIN)
+  is_active              Boolean                  @default(true)
+  last_login_at          DateTime?                @db.Timestamptz(6)
+  password_changed_at    DateTime                 @default(now()) @db.Timestamptz(6)
+  created_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  activity_logs          activity_logs[]
+  admin_sessions         admin_sessions[]
+  availability_blocks    availability_blocks[]
+  backup_jobs            backup_jobs[]
+  booking_notes          booking_notes[]
+  booking_quote_history  booking_quote_history[]
+  booking_status_history booking_status_history[]
+  exchange_rates         exchange_rates[]
+  media                  media[]
+  password_reset_tokens  password_reset_tokens[]
+  reviews                reviews[]
+  site_settings          site_settings[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model availability_blocks {
+  id              String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  vehicle_id      String?                 @db.Uuid
+  vehicle_type_id String?                 @db.Uuid
+  starts_at       DateTime                @db.Timestamptz(6)
+  ends_at         DateTime                @db.Timestamptz(6)
+  block_type      availability_block_type @default(UNAVAILABLE)
+  reason          String?
+  created_by      String?                 @db.Uuid
+  created_at      DateTime                @default(now()) @db.Timestamptz(6)
+  admins          admins?                 @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+  vehicles        vehicles?               @relation(fields: [vehicle_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  vehicle_types   vehicle_types?          @relation(fields: [vehicle_type_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([vehicle_type_id, starts_at, ends_at], map: "availability_blocks_type_time_idx")
+  @@index([vehicle_id, starts_at, ends_at], map: "availability_blocks_vehicle_time_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model backup_jobs {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  status        String
+  storage_key   String?
+  started_at    DateTime? @db.Timestamptz(6)
+  completed_at  DateTime? @db.Timestamptz(6)
+  error_summary String?
+  created_by    String?   @db.Uuid
+  created_at    DateTime  @default(now()) @db.Timestamptz(6)
+  admins        admins?   @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model booking_notes {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id String   @db.Uuid
+  admin_id   String?  @db.Uuid
+  note       String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  admins     admins?  @relation(fields: [admin_id], references: [id], onUpdate: NoAction)
+  bookings   bookings @relation(fields: [booking_id], references: [id], onUpdate: NoAction)
+
+  @@index([booking_id, created_at(sort: Desc)], map: "booking_notes_booking_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model booking_quote_history {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id   String   @db.Uuid
+  old_amount   Decimal? @db.Decimal(12, 2)
+  old_currency String?  @db.Char(3)
+  new_amount   Decimal  @db.Decimal(12, 2)
+  new_currency String   @db.Char(3)
+  notes        String?
+  changed_by   String?  @db.Uuid
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  bookings     bookings @relation(fields: [booking_id], references: [id], onUpdate: NoAction)
+  admins       admins?  @relation(fields: [changed_by], references: [id], onUpdate: NoAction)
+
+  @@index([booking_id, created_at(sort: Desc)], map: "booking_quote_history_booking_idx")
+}
+
+model booking_status_history {
+  id         String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id String          @db.Uuid
+  old_status booking_status?
+  new_status booking_status
+  reason     String?
+  changed_by String?         @db.Uuid
+  created_at DateTime        @default(now()) @db.Timestamptz(6)
+  bookings   bookings        @relation(fields: [booking_id], references: [id], onUpdate: NoAction)
+  admins     admins?         @relation(fields: [changed_by], references: [id], onUpdate: NoAction)
+
+  @@index([booking_id, created_at(sort: Desc)], map: "booking_status_history_booking_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model bookings {
+  id                         String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_code               String                   @unique
+  idempotency_key            String?                  @unique
+  booking_type               booking_type
+  customer_name              String
+  phone                      String
+  email                      String?
+  language                   String                   @default("en") @db.VarChar(10)
+  service_id                 String?                  @db.Uuid
+  vehicle_type_id            String?                  @db.Uuid
+  requested_vehicle_id       String?                  @db.Uuid
+  travel_date                DateTime                 @db.Date
+  return_date                DateTime?                @db.Date
+  preferred_time             DateTime?                @db.Time(6)
+  pickup_location            String
+  pickup_map_url             String?
+  destination_text           String?
+  destination_map_url        String?
+  trip_type                  String?
+  passengers                 Int
+  children_count             Int                      @default(0)
+  luggage_count              Int?
+  requested_duration_minutes Int?
+  extra_requests             String?
+  status                     booking_status           @default(NEW_REQUEST)
+  quoted_amount              Decimal?                 @db.Decimal(12, 2)
+  quoted_currency            String?                  @db.Char(3)
+  payment_status             payment_status           @default(NOT_REQUIRED)
+  privacy_consent_at         DateTime?                @db.Timestamptz(6)
+  privacy_policy_version     String?
+  customer_source            String                   @default("WEBSITE")
+  internal_reference         String?
+  created_at                 DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at                 DateTime                 @default(now()) @db.Timestamptz(6)
+  archived_at                DateTime?                @db.Timestamptz(6)
+  booking_notes              booking_notes[]
+  booking_quote_history      booking_quote_history[]
+  booking_status_history     booking_status_history[]
+  vehicles                   vehicles?                @relation(fields: [requested_vehicle_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  services                   services?                @relation(fields: [service_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  vehicle_types              vehicle_types?           @relation(fields: [vehicle_type_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reviews                    reviews?
+
+  @@index([created_at(sort: Desc)], map: "bookings_created_idx")
+  @@index([travel_date, status], map: "bookings_date_status_idx")
+  @@index([phone])
+  @@index([service_id, travel_date], map: "bookings_service_date_idx")
+  @@index([status, created_at(sort: Desc)], map: "bookings_status_idx")
+  @@index([booking_type, travel_date], map: "bookings_type_date_idx")
+  @@index([requested_vehicle_id, travel_date], map: "bookings_vehicle_date_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model exchange_rates {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  base_currency  String   @db.Char(3)
+  quote_currency String   @db.Char(3)
+  rate           Decimal  @db.Decimal(18, 8)
+  source         String?
+  effective_at   DateTime @default(now()) @db.Timestamptz(6)
+  created_by     String?  @db.Uuid
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  admins         admins?  @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+
+  @@index([base_currency, quote_currency, effective_at(sort: Desc)], map: "exchange_rates_pair_date_idx")
+}
+
+model faqs {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  question_i18n Json
+  answer_i18n   Json
+  category      String?
+  status        content_status @default(DRAFT)
+  sort_order    Int            @default(0)
+  created_at    DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime       @default(now()) @db.Timestamptz(6)
+
+  @@index([status, sort_order], map: "faqs_public_order_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model media {
+  id               String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storage_provider String
+  storage_key      String
+  public_url       String?
+  kind             media_kind      @default(IMAGE)
+  mime_type        String
+  size_bytes       BigInt
+  width_px         Int?
+  height_px        Int?
+  alt_i18n         Json            @default("{}")
+  caption_i18n     Json            @default("{}")
+  uploaded_by      String?         @db.Uuid
+  created_at       DateTime        @default(now()) @db.Timestamptz(6)
+  admins           admins?         @relation(fields: [uploaded_by], references: [id], onUpdate: NoAction)
+  place_media      place_media[]
+  service_media    service_media[]
+  vehicle_media    vehicle_media[]
+
+  @@unique([storage_provider, storage_key])
+}
+
+model password_reset_tokens {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  admin_id   String    @db.Uuid
+  token_hash String    @unique
+  expires_at DateTime  @db.Timestamptz(6)
+  used_at    DateTime? @db.Timestamptz(6)
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+  admins     admins    @relation(fields: [admin_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([expires_at], map: "password_reset_expiry_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model place_media {
+  place_id   String @db.Uuid
+  media_id   String @db.Uuid
+  role       String @default("GALLERY")
+  sort_order Int    @default(0)
+  media      media  @relation(fields: [media_id], references: [id], onUpdate: NoAction)
+  places     places @relation(fields: [place_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([place_id, media_id, role])
+  @@index([place_id, role, sort_order], map: "place_media_order_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model places {
+  id                         String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug                       String           @unique
+  name_i18n                  Json
+  short_description_i18n     Json             @default("{}")
+  description_i18n           Json             @default("{}")
+  address_i18n               Json             @default("{}")
+  region                     String?
+  country_code               String           @default("LK") @db.Char(2)
+  latitude                   Decimal?         @db.Decimal(9, 6)
+  longitude                  Decimal?         @db.Decimal(9, 6)
+  map_url                    String?
+  suggested_duration_minutes Int?
+  visitor_tips_i18n          Json             @default("{}")
+  best_time_i18n             Json             @default("{}")
+  status                     content_status   @default(DRAFT)
+  is_featured                Boolean          @default(false)
+  sort_order                 Int              @default(0)
+  seo_title_i18n             Json             @default("{}")
+  seo_description_i18n       Json             @default("{}")
+  created_at                 DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at                 DateTime         @default(now()) @db.Timestamptz(6)
+  archived_at                DateTime?        @db.Timestamptz(6)
+  place_media                place_media[]
+  service_places             service_places[]
+
+  @@index([status, is_featured, sort_order], map: "places_public_listing_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model reviews {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id      String?           @unique @db.Uuid
+  public_name     String
+  rating          Int               @db.SmallInt
+  comment         String
+  language        String            @default("en") @db.VarChar(10)
+  status          moderation_status @default(PENDING)
+  moderated_by    String?           @db.Uuid
+  moderated_at    DateTime?         @db.Timestamptz(6)
+  moderation_note String?
+  created_at      DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime          @default(now()) @db.Timestamptz(6)
+  bookings        bookings?         @relation(fields: [booking_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  admins          admins?           @relation(fields: [moderated_by], references: [id], onUpdate: NoAction)
+
+  @@index([status, created_at(sort: Desc)], map: "reviews_public_idx")
+  @@index([rating])
+}
+
+model service_categories {
+  service_id      String          @db.Uuid
+  category_id     String          @db.Uuid
+  tour_categories tour_categories @relation(fields: [category_id], references: [id], onUpdate: NoAction)
+  services        services        @relation(fields: [service_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([service_id, category_id])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model service_media {
+  service_id String   @db.Uuid
+  media_id   String   @db.Uuid
+  role       String   @default("GALLERY")
+  sort_order Int      @default(0)
+  media      media    @relation(fields: [media_id], references: [id], onUpdate: NoAction)
+  services   services @relation(fields: [service_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([service_id, media_id, role])
+  @@index([service_id, role, sort_order], map: "service_media_order_idx")
+}
+
+model service_places {
+  service_id String   @db.Uuid
+  place_id   String   @db.Uuid
+  sort_order Int      @default(0)
+  places     places   @relation(fields: [place_id], references: [id], onUpdate: NoAction)
+  services   services @relation(fields: [service_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([service_id, place_id])
+  @@index([place_id], map: "service_places_place_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model services {
+  id                       String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug                     String               @unique
+  service_type             service_type
+  title_i18n               Json
+  short_description_i18n   Json                 @default("{}")
+  description_i18n         Json                 @default("{}")
+  duration_minutes         Int?
+  pricing_model            pricing_model        @default(QUOTE_REQUIRED)
+  price_from_usd           Decimal?             @db.Decimal(12, 2)
+  price_from_lkr           Decimal?             @db.Decimal(14, 2)
+  currency                 String?              @db.Char(3)
+  includes_i18n            Json                 @default("{}")
+  excludes_i18n            Json                 @default("{}")
+  highlights_i18n          Json                 @default("{}")
+  cancellation_policy_i18n Json                 @default("{}")
+  minimum_advance_hours    Int                  @default(0)
+  max_passengers           Int?
+  status                   content_status       @default(DRAFT)
+  is_featured              Boolean              @default(false)
+  sort_order               Int                  @default(0)
+  seo_title_i18n           Json                 @default("{}")
+  seo_description_i18n     Json                 @default("{}")
+  created_at               DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at               DateTime             @default(now()) @db.Timestamptz(6)
+  archived_at              DateTime?            @db.Timestamptz(6)
+  bookings                 bookings[]
+  service_categories       service_categories[]
+  service_media            service_media[]
+  service_places           service_places[]
+
+  @@index([status, service_type, is_featured, sort_order], map: "services_public_listing_idx")
+  @@index([service_type], map: "services_type_idx")
+}
+
+model site_settings {
+  setting_key   String   @id
+  setting_value Json
+  is_public     Boolean  @default(false)
+  updated_by    String?  @db.Uuid
+  updated_at    DateTime @default(now()) @db.Timestamptz(6)
+  admins        admins?  @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+}
+
+model tour_categories {
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug               String               @unique
+  name_i18n          Json
+  description_i18n   Json                 @default("{}")
+  status             content_status       @default(PUBLISHED)
+  sort_order         Int                  @default(0)
+  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime             @default(now()) @db.Timestamptz(6)
+  service_categories service_categories[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model vehicle_media {
+  vehicle_type_id String        @db.Uuid
+  media_id        String        @db.Uuid
+  role            String        @default("GALLERY")
+  sort_order      Int           @default(0)
+  media           media         @relation(fields: [media_id], references: [id], onUpdate: NoAction)
+  vehicle_types   vehicle_types @relation(fields: [vehicle_type_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([vehicle_type_id, media_id, role])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model vehicle_types {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug                String                @unique
+  name_i18n           Json
+  description_i18n    Json                  @default("{}")
+  passenger_capacity  Int
+  luggage_capacity    Int?
+  pricing_model       pricing_model         @default(QUOTE_REQUIRED)
+  price_from_usd      Decimal?              @db.Decimal(12, 2)
+  price_from_lkr      Decimal?              @db.Decimal(14, 2)
+  driver_included     Boolean               @default(true)
+  status              content_status        @default(PUBLISHED)
+  sort_order          Int                   @default(0)
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime              @default(now()) @db.Timestamptz(6)
+  availability_blocks availability_blocks[]
+  bookings            bookings[]
+  vehicle_media       vehicle_media[]
+  vehicles            vehicles[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model vehicles {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  vehicle_type_id     String                @db.Uuid
+  display_name        String
+  internal_code       String?               @unique
+  registration_number String?
+  passenger_capacity  Int?
+  luggage_capacity    Int?
+  status              content_status        @default(PUBLISHED)
+  operational_notes   String?
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime              @default(now()) @db.Timestamptz(6)
+  archived_at         DateTime?             @db.Timestamptz(6)
+  availability_blocks availability_blocks[]
+  bookings            bookings[]
+  vehicle_types       vehicle_types         @relation(fields: [vehicle_type_id], references: [id], onUpdate: NoAction)
+
+  @@index([vehicle_type_id, status], map: "vehicles_type_status_idx")
+}
+
+enum admin_role {
+  OWNER
+  ADMIN
+  EDITOR
+}
+
+enum availability_block_type {
+  MAINTENANCE
+  UNAVAILABLE
+  PRIVATE_USE
+  OTHER
+}
+
+enum booking_status {
+  NEW_REQUEST
+  CONTACT_PENDING
+  QUOTATION_SENT
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  REJECTED
+}
+
+enum booking_type {
+  TOUR
+  VEHICLE
+  TRANSFER
+  CUSTOM
+}
+
+enum content_status {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum media_kind {
+  IMAGE
+  VIDEO
+}
+
+enum moderation_status {
+  PENDING
+  APPROVED
+  REJECTED
+  HIDDEN
+}
+
+enum payment_status {
+  NOT_REQUIRED
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  REFUND_PENDING
+  PARTIALLY_REFUNDED
+  REFUNDED
+  FAILED
+}
+
+enum pricing_model {
+  PER_PERSON
+  PER_BOOKING
+  PER_VEHICLE
+  PER_HOUR
+  PER_DAY
+  PER_DISTANCE
+  QUOTE_REQUIRED
+}
+
+enum service_type {
+  TOUR
+  TRANSFER
+  EXPERIENCE
+  CUSTOM
+}
