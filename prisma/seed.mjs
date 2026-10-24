@@ -1,6 +1,6 @@
 // Idempotent local seed: owner admin + demo catalog matching the frontend.
 // Run: npm run seed
-// Env: SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD (dev only defaults below).
+// Env: SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD must be explicitly configured.
 import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
@@ -47,18 +47,17 @@ async function upsertService(data, categorySlugs = [], placeSlugs = []) {
 async function main() {
   const email = process.env.SEED_ADMIN_EMAIL;
   const password = process.env.SEED_ADMIN_PASSWORD;
-  if (process.env.NODE_ENV === 'production' && (!email || !password)) {
-    throw new Error('SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD must be set before seeding in production.');
+  if (!email || !password) {
+    throw new Error('SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD must be set before running the seed.');
   }
-  const adminEmail = email || 'admin@wanderwheels.local';
-  const adminPassword = password || 'WanderWheels!123';
+  const adminEmail = email;
   const existing = await prisma.admins.findFirst({ where: { email: { equals: adminEmail, mode: 'insensitive' } } });
   if (!existing) {
     await prisma.admins.create({
       data: {
         email: adminEmail,
         display_name: 'Site Owner',
-        password_hash: await bcrypt.hash(adminPassword, 10),
+        password_hash: await bcrypt.hash(password, 10),
         role: 'OWNER',
       },
     });
